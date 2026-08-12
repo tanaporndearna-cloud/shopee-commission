@@ -14,29 +14,86 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("🛒 คำนวณค่าคอมมิชชั่น SHOPEE")
-st.caption("TRC Motorsport — powered by Claude")
-
 # ── Constants ─────────────────────────────────────────────────────────────────
-STOCK_SHEET_ID    = "1p4-DX-Sq-Mvo_FNAkYtGMkdEBvPDCuPM_sZ_b-_Tm-Y"
-OUTPUT_FOLDER_ID  = "1ta-8NrKxcOlDO6MJwhw96Y8ifZ1RmgVs"
+STOCK_SHEET_ID   = "1p4-DX-Sq-Mvo_FNAkYtGMkdEBvPDCuPM_sZ_b-_Tm-Y"
+OUTPUT_FOLDER_ID = "1ta-8NrKxcOlDO6MJwhw96Y8ifZ1RmgVs"
+OAUTH_SCOPES     = ["https://www.googleapis.com/auth/drive"]
 
-# ── Google Drive helper ────────────────────────────────────────────────────────
+# ── OAuth helpers ─────────────────────────────────────────────────────────────
+def has_oauth_secrets():
+    try:
+        return "oauth" in st.secrets
+    except Exception:
+        return False
+
+def get_oauth_flow():
+    from google_auth_oauthlib.flow import Flow
+    client_config = {
+        "web": {
+            "client_id": st.secrets["oauth"]["client_id"],
+            "client_secret": st.secrets["oauth"]["client_secret"],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [st.secrets["oauth"]["redirect_uri"]],
+        }
+    }
+    flow = Flow.from_client_config(client_config, scopes=OAUTH_SCOPES)
+    flow.redirect_uri = st.secrets["oauth"]["redirect_uri"]
+    return flow
+
+def handle_oauth_callback():
+    """รับ OAuth callback — แลก code เป็น credentials"""
+    query_params = st.query_params
+    if "code" in query_params and "drive_credentials" not in st.session_state:
+        try:
+            flow = get_oauth_flow()
+            flow.fetch_token(code=query_params["code"])
+            creds = flow.credentials
+            st.session_state["drive_credentials"] = {
+                "token": creds.token,
+                "refresh_token": creds.refresh_token,
+                "token_uri": creds.token_uri,
+                "client_id": creds.client_id,
+                "client_secret": creds.client_secret,
+                "scopes": list(creds.scopes or OAUTH_SCOPES),
+            }
+            st.query_params.clear()
+            st.rerun()
+        except Exception as e:
+            st.error(f"OAuth error: {e}")
+
+def get_user_drive_service():
+    """Drive service โดยใช้ credentials ของ user (OAuth)"""
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request
+    from googleapiclient.discovery import build
+    info = st.session_state["drive_credentials"]
+    creds = Credentials(
+        token=info["token"],
+        refresh_token=info.get("refresh_token"),
+        token_uri=info["token_uri"],
+        client_id=info["client_id"],
+        client_secret=info["client_secret"],
+        scopes=info["scopes"],
+    )
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        st.session_state["drive_credentials"]["token"] = creds.token
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+# ── Service account helpers ───────────────────────────────────────────────────
 def get_drive_service():
-    """สร้าง Google Drive service จาก service account ใน Streamlit secrets"""
+    """Drive service ด้วย service account (สำหรับดึง STOCK)"""
     from google.oauth2.service_account import Credentials
     from googleapiclient.discovery import build
-
     creds = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],
         scopes=["https://www.googleapis.com/auth/drive"],
     )
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
-
 def download_stock_csv() -> str | None:
-    """ดาวน์โหลด STOCK จาก Google Sheets → return path ของ CSV ชั่วคราว"""
-    # ลอง export URL ก่อน (ถ้า sheet เปิดสาธารณะ)
+    """ดาวน์โหลด STOCK จาก Google Sheets → return path CSV ชั่วคราว"""
     export_url = f"https://docs.google.com/spreadsheets/d/{STOCK_SHEET_ID}/export?format=csv"
     try:
         r = requests.get(export_url, timeout=30)
@@ -47,8 +104,6 @@ def download_stock_csv() -> str | None:
             return tmp.name
     except Exception:
         pass
-
-    # fallback: ใช้ Drive API (ต้องมี secrets)
     try:
         from googleapiclient.http import MediaIoBaseDownload
         svc = get_drive_service()
@@ -63,23 +118,23 @@ def download_stock_csv() -> str | None:
         tmp.close()
         return tmp.name
     except Exception as e:
-        st.warning(f"⚠️ ดาวน์โหลด STOCK ไม่ได้: {e}\n\nถ้าต้องการให้ดึง STOCK อัตโนมัติ กรุณาอัปโหลดไฟล์ STOCK.xlsx แทน")
+        st.warning(f"⚠️ ดาวน์โหลด STOCK ไม่ได้: {e}")
         return None
-
 
 def upload_to_drive(file_bytes: bytes, filename: str, folder_id: str) -> str:
     """อัปโหลดไฟล์ไปยัง Google Drive → return web link
-    วิธี: อัปโหลดโดยไม่ระบุ parent ก่อน แล้ว move เข้า folder
-    เพื่อหลีกเลี่ยง storageQuotaExceeded ของ service account
+    ใช้ OAuth user credentials ถ้า login แล้ว ไม่งั้นใช้ service account
     """
     from googleapiclient.http import MediaIoBaseUpload
-    svc = get_drive_service()
+    if "drive_credentials" in st.session_state:
+        svc = get_user_drive_service()
+    else:
+        svc = get_drive_service()
     media = MediaIoBaseUpload(
         io.BytesIO(file_bytes),
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         resumable=True,
     )
-    # สร้างไฟล์ใน folder โดยตรง พร้อม supportsAllDrives
     meta = {"name": filename, "parents": [folder_id]}
     f = svc.files().create(
         body=meta,
@@ -88,7 +143,6 @@ def upload_to_drive(file_bytes: bytes, filename: str, folder_id: str) -> str:
         supportsAllDrives=True,
     ).execute()
     file_id = f.get("id")
-    # ทำให้ anyone with link สามารถดูได้
     try:
         svc.permissions().create(
             fileId=file_id,
@@ -100,7 +154,15 @@ def upload_to_drive(file_bytes: bytes, filename: str, folder_id: str) -> str:
     return f.get("webViewLink", f"https://drive.google.com/file/d/{file_id}/view")
 
 
-# ── Sidebar — เลือกเดือน ──────────────────────────────────────────────────────
+# ── Handle OAuth callback (ต้องทำก่อน UI) ────────────────────────────────────
+if has_oauth_secrets():
+    handle_oauth_callback()
+
+# ── Title ─────────────────────────────────────────────────────────────────────
+st.title("🛒 คำนวณค่าคอมมิชชั่น SHOPEE")
+st.caption("TRC Motorsport — powered by Claude")
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ ตั้งค่า")
     now = datetime.date.today()
@@ -113,6 +175,35 @@ with st.sidebar:
     st.info(f"โฟลเดอร์: **{folder_name}**")
 
     st.divider()
+
+    # ── Google Drive auth ─────────────────────────────────────────────────────
+    if has_oauth_secrets():
+        st.markdown("**Google Drive Upload**")
+        if "drive_credentials" in st.session_state:
+            st.success("✅ เชื่อมต่อ Google แล้ว")
+            if st.button("ออกจากระบบ Drive"):
+                del st.session_state["drive_credentials"]
+                st.rerun()
+        else:
+            st.warning("⚠️ ยังไม่ได้ Login — ไฟล์จะไม่ถูกส่งไป Drive")
+            try:
+                flow = get_oauth_flow()
+                auth_url, _ = flow.authorization_url(
+                    access_type="offline",
+                    prompt="consent",
+                )
+                st.markdown(
+                    f'<a href="{auth_url}" target="_self">'
+                    f'<button style="background:#4285f4;color:white;border:none;'
+                    f'padding:8px 16px;border-radius:4px;cursor:pointer;width:100%;'
+                    f'font-size:14px;">🔑 Login with Google Drive</button></a>',
+                    unsafe_allow_html=True,
+                )
+                st.caption("คลิกเพื่ออนุญาตให้ app อัปโหลดไฟล์ไปยัง Drive ของคุณ")
+            except Exception:
+                pass
+        st.divider()
+
     st.markdown("**ลำดับการทำงาน**")
     st.markdown("""
 1. ดึง STOCK จาก Google Drive
@@ -152,7 +243,6 @@ with col2:
         help="ชื่อไฟล์ต้องขึ้นต้นด้วย การเงิน-MAFIA / การเงิน-TRC / การเงิน-UTOPIA / การเงิน-FREEROAD / การเงิน-WORKFORCE",
     )
 
-# optional STOCK override
 with st.expander("🗂️ อัปโหลด STOCK.xlsx (ถ้าไม่ต้องการดึงจาก Drive)"):
     stock_override = st.file_uploader("STOCK.xlsx (optional)", type=["xlsx"])
 
@@ -207,8 +297,7 @@ if st.button("🚀 คำนวณค่าคอม", type="primary", use_conta
                 shopee_dir = os.path.join(base, "Data SHOPEE")
                 os.makedirs(shopee_dir)
                 for sf in shopee_files:
-                    fpath = os.path.join(shopee_dir, sf.name)
-                    with open(fpath, "wb") as f:
+                    with open(os.path.join(shopee_dir, sf.name), "wb") as f:
                         f.write(sf.getvalue())
                     log(f"  📄 {sf.name}")
                 if shopee_files:
@@ -218,8 +307,7 @@ if st.button("🚀 คำนวณค่าคอม", type="primary", use_conta
                 abbhsp_dir = os.path.join(base, "ABBHSP")
                 os.makedirs(abbhsp_dir)
                 for af in abbhsp_files:
-                    fpath = os.path.join(abbhsp_dir, af.name)
-                    with open(fpath, "wb") as f:
+                    with open(os.path.join(abbhsp_dir, af.name), "wb") as f:
                         f.write(af.getvalue())
                     log(f"  📄 {af.name}")
                 if abbhsp_files:
@@ -229,8 +317,7 @@ if st.button("🚀 คำนวณค่าคอม", type="primary", use_conta
                 fin_dir = os.path.join(base, "การเงิน SHOPEE")
                 os.makedirs(fin_dir)
                 for ff in fin_files:
-                    fpath = os.path.join(fin_dir, ff.name)
-                    with open(fpath, "wb") as f:
+                    with open(os.path.join(fin_dir, ff.name), "wb") as f:
                         f.write(ff.getvalue())
                     log(f"  📄 {ff.name}")
                 if fin_files:
@@ -247,8 +334,7 @@ if st.button("🚀 คำนวณค่าคอม", type="primary", use_conta
                     run_combined(base, out_path, stock_csv_path)
                 finally:
                     sys.stdout = old_stdout
-                combined_log = buf.getvalue()
-                for line in combined_log.splitlines():
+                for line in buf.getvalue().splitlines():
                     log(f"  {line}")
                 log("✅ build_combined เสร็จแล้ว")
 
@@ -260,8 +346,7 @@ if st.button("🚀 คำนวณค่าคอม", type="primary", use_conta
                     run_analysis(out_path, out_path)
                 finally:
                     sys.stdout = old_stdout
-                analysis_log = buf.getvalue()
-                for line in analysis_log.splitlines():
+                for line in buf.getvalue().splitlines():
                     log(f"  {line}")
                 log("✅ build_analysis เสร็จแล้ว")
 
@@ -275,12 +360,12 @@ if st.button("🚀 คำนวณค่าคอม", type="primary", use_conta
                 log(f"\n⏳ กำลังอัปโหลด {output_filename} ไปยัง Google Drive...")
                 try:
                     drive_link = upload_to_drive(result_bytes, output_filename, OUTPUT_FOLDER_ID)
-                    log(f"✅ อัปโหลดสำเร็จ!")
-                    st.success(f"✅ อัปโหลดไปยัง Google Drive สำเร็จ!")
+                    log("✅ อัปโหลดสำเร็จ!")
+                    st.success("✅ อัปโหลดไปยัง Google Drive สำเร็จ!")
                     st.markdown(f"### [📄 เปิดไฟล์ใน Google Drive]({drive_link})")
                 except Exception as e:
                     log(f"⚠️ อัปโหลด Drive ไม่ได้: {e}")
-                    st.warning(f"อัปโหลดไป Drive ไม่ได้ค่ะ ({e}) — ดาวน์โหลดโดยตรงแทนได้เลย")
+                    st.warning(f"อัปโหลดไป Drive ไม่ได้ค่ะ — ดาวน์โหลดโดยตรงแทนได้เลย")
 
                 # 10. Download button
                 st.download_button(
@@ -291,7 +376,7 @@ if st.button("🚀 คำนวณค่าคอม", type="primary", use_conta
                     use_container_width=True,
                 )
 
-                # Cleanup temp stock CSV
+                # Cleanup
                 if stock_csv_path and os.path.exists(stock_csv_path):
                     os.unlink(stock_csv_path)
 
@@ -301,4 +386,4 @@ if st.button("🚀 คำนวณค่าคอม", type="primary", use_conta
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
 st.divider()
-st.caption("TRC Motorsport © 2026 | shopee-commission v1.0")
+st.caption("TRC Motorsport © 2026 | shopee-commission v1.1")
