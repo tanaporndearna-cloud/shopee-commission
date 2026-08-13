@@ -164,7 +164,8 @@ def upload_to_drive(file_bytes: bytes, filename: str, folder_id: str) -> str:
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         resumable=True,
     )
-    meta = {"name": filename, "parents": [folder_id]}
+    # แปลงเป็น Google Sheet อัตโนมัติตอน upload
+    meta = {"name": filename, "parents": [folder_id], "mimeType": "application/vnd.google-apps.spreadsheet"}
     f = svc.files().create(
         body=meta,
         media_body=media,
@@ -399,5 +400,5 @@ if st.button("🚀 คำนวณค่าคอม", type="primary", use_conta
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
 st.divider()
-st.caption("TRC Motorsport © 2026 | shopee-commission v1.3")
+st.caption("TRC Motorsport © 2026 | shopee-commission v1.4")
 
