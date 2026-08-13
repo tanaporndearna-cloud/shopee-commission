@@ -92,6 +92,29 @@ def get_drive_service():
     )
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
+def get_auto_drive_service():
+    """ใช้ stored refresh_token จาก secrets อัตโนมัติ — ไม่ต้อง login"""
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request
+    from googleapiclient.discovery import build
+    try:
+        oauth = st.secrets.get("oauth", {})
+        refresh_token = oauth.get("refresh_token", "")
+        if refresh_token:
+            creds = Credentials(
+                token=None,
+                refresh_token=refresh_token,
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=oauth["client_id"],
+                client_secret=oauth["client_secret"],
+                scopes=OAUTH_SCOPES,
+            )
+            creds.refresh(Request())
+            return build("drive", "v3", credentials=creds, cache_discovery=False)
+    except Exception:
+        pass
+    return get_drive_service()
+
 def download_stock_csv() -> str | None:
     """ดาวน์โหลด STOCK จาก Google Sheets → return path CSV ชั่วคราว"""
     export_url = f"https://docs.google.com/spreadsheets/d/{STOCK_SHEET_ID}/export?format=csv"
@@ -123,13 +146,14 @@ def download_stock_csv() -> str | None:
 
 def upload_to_drive(file_bytes: bytes, filename: str, folder_id: str) -> str:
     """อัปโหลดไฟล์ไปยัง Google Drive → return web link
-    ใช้ OAuth user credentials ถ้า login แล้ว ไม่งั้นใช้ service account
+    ใช้ OAuth user credentials ถ้า login แล้ว
+    ถ้าไม่ได้ login ใช้ stored refresh_token จาก secrets อัตโนมัติ
     """
     from googleapiclient.http import MediaIoBaseUpload
     if "drive_credentials" in st.session_state:
         svc = get_user_drive_service()
     else:
-        svc = get_drive_service()
+        svc = get_auto_drive_service()
     media = MediaIoBaseUpload(
         io.BytesIO(file_bytes),
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -185,23 +209,7 @@ with st.sidebar:
                 del st.session_state["drive_credentials"]
                 st.rerun()
         else:
-            st.warning("⚠️ ยังไม่ได้ Login — ไฟล์จะไม่ถูกส่งไป Drive")
-            try:
-                flow = get_oauth_flow()
-                auth_url, _ = flow.authorization_url(
-                    access_type="offline",
-                    prompt="consent",
-                )
-                st.markdown(
-                    f'<a href="{auth_url}" target="_self">'
-                    f'<button style="background:#4285f4;color:white;border:none;'
-                    f'padding:8px 16px;border-radius:4px;cursor:pointer;width:100%;'
-                    f'font-size:14px;">🔑 Login with Google Drive</button></a>',
-                    unsafe_allow_html=True,
-                )
-                st.caption("คลิกเพื่ออนุญาตให้ app อัปโหลดไฟล์ไปยัง Drive ของคุณ")
-            except Exception:
-                pass
+            st.info("✅ อัปโหลด Drive อัตโนมัติ (ไม่ต้อง Login)")
         st.divider()
 
     st.markdown("**ลำดับการทำงาน**")
@@ -386,4 +394,5 @@ if st.button("🚀 คำนวณค่าคอม", type="primary", use_conta
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
 st.divider()
-st.caption("TRC Motorsport © 2026 | shopee-commission v1.1")
+st.caption("TRC Motorsport © 2026 | shopee-commission v1.2")
+
