@@ -98,7 +98,12 @@ def get_auto_drive_service():
     from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
     try:
-        oauth = st.secrets.get("oauth", {})
+        # รองรับทั้ง [gdrive_oauth] (เหมือน LAZADA) และ [oauth]
+        oauth = {}
+        if "gdrive_oauth" in st.secrets:
+            oauth = dict(st.secrets["gdrive_oauth"])
+        elif "oauth" in st.secrets:
+            oauth = dict(st.secrets["oauth"])
         refresh_token = oauth.get("refresh_token", "")
         if refresh_token:
             creds = Credentials(
@@ -394,5 +399,5 @@ if st.button("🚀 คำนวณค่าคอม", type="primary", use_conta
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
 st.divider()
-st.caption("TRC Motorsport © 2026 | shopee-commission v1.2")
+st.caption("TRC Motorsport © 2026 | shopee-commission v1.3")
 
