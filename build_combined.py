@@ -329,13 +329,8 @@ def run(BASE, OUT, STOCK_CSV=None):
 
     if not df_stock.empty:
         for r in range(2, ws_erp.max_row + 1):
-            ws_erp.cell(r, 5).value = f'=IFERROR(INDEX(STOCK!$B:$B,MATCH(C{r},STOCK!$I:$I,0)),"")'            # Col F = Col E เสมอ ยกเว้น BP051 → F = 0
-            abb_val = ws_erp.cell(r, 3).value
-            if str(abb_val).strip() == 'BP051':
-                ws_erp.cell(r, 6).value = 0
-            else:
-                ws_erp.cell(r, 6).value = f'=E{r}'
-
+            ws_erp.cell(r, 5).value = f'=IFERROR(INDEX(STOCK!$B:$B,MATCH(C{r},STOCK!$I:$I,0)),"")'         
+           
     FIN_SHEETS_F = ['SPจ่ายMAFIA','SPจ่ายTRC','SPจ่ายUTOPIA','SPจ่ายFREEROAD','SPจ่ายWORKFORCE']
     for sname in FIN_SHEETS_F:
         if sname not in wb.sheetnames: continue
