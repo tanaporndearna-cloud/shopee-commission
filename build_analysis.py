@@ -173,6 +173,8 @@ def run(INPUT, OUTPUT):
         sku_val = str(row_data[sku_i] or '') if sku_i is not None else ''
         if sku_val.startswith('BP051'):
             ws.cell(r,6).value = 0
+        else:
+            ws.cell(r,6).value = f'=E{r}'
         if SP_PRICE: ws.cell(r,CAA).value = shopee_f(SP_PRICE, r, negate=False, qty=True)
         if SP_AP:    ws.cell(r,CAB).value = shopee_f(SP_AP,    r, negate=True,  qty=False)
         if SP_AO:    ws.cell(r,CAC).value = shopee_f(SP_AO,    r, negate=True,  qty=False)
