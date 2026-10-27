@@ -334,23 +334,23 @@ def run(INPUT, OUTPUT):
         _set(2,c,h,F_NAVY,FN_HDR,align=AL_C)
 
     _rh(3,24)
-    data_row(3,'ยอดขาย','',F_WHITE,lambda sn:_sf(L[CAA],sn),bold=True,col_a_fill=F_BLUE_A)
+    data_row(3,'ยอดขาย','ยอดขาย',F_WHITE,lambda sn:_sf(L[CAA],sn),bold=True,col_a_fill=F_BLUE_A)
     sales_row=3
     ws_cv.cell(3,1).value='รายได้'; ws_cv.cell(3,1).font=FN_CAT_IN; ws_cv.cell(3,1).alignment=AL_C
 
     exp_items=[
-        ('ค่าธรรมเนียมการโอน',         L[CAB]),
-        ('ค่าคอมมิชชั่น',              L[CAC]),
-        ('ค่าบริการ',                   L[CAD]),
-        ('รายการปรับปรุงจาก SHOPEE',    L[CAE]),
-        ('ค่าธรรมเนียมการจ่ายนอกรอบ',  L[CAF]),
-        ('ค่าจัดส่ง Shopee ออกให้',    L[CAG]),
-        ('ค่าจัดส่งที่ชำระโดยผู้ซื้อ', L[CAH]),
-        ('ค่าจัดส่งที่ชำระโดยผู้ขาย',  L[CAI]),
+        ('ค่าธรรมเนียมการโอน',         L[CAB], 'ค่าใช้จ่าย SP'),
+        ('ค่าคอมมิชชั่น',              L[CAC], 'ค่าใช้จ่าย SP'),
+        ('ค่าบริการ',                   L[CAD], 'ค่าใช้จ่าย SP'),
+        ('รายการปรับปรุงจาก SHOPEE',    L[CAE], 'รายการปรับปรุง'),
+        ('ค่าธรรมเนียมการจ่ายนอกรอบ',  L[CAF], 'ค่าใช้จ่าย SP'),
+        ('ค่าจัดส่ง Shopee ออกให้',    L[CAG], 'ค่าขนส่ง'),
+        ('ค่าจัดส่งที่ชำระโดยผู้ซื้อ', L[CAH], 'ค่าขนส่ง'),
+        ('ค่าจัดส่งที่ชำระโดยผู้ขาย',  L[CAI], 'ค่าขนส่ง'),
     ]
-    for idx,(label,col) in enumerate(exp_items):
+    for idx,(label,col,note) in enumerate(exp_items):
         r=4+idx; _rh(r,20)
-        data_row(r,label,'',F_WHITE,lambda sn,c=col:_sf(c,sn),col_a_fill=F_RED)
+        data_row(r,label,note,F_WHITE,lambda sn,c=col:_sf(c,sn),col_a_fill=F_RED)
 
     ws_cv.merge_cells(start_row=4,start_column=1,end_row=11,end_column=1)
     c_cat=ws_cv.cell(4,1); c_cat.value='ค่าใช้จ่าย\nSHOPEE'; c_cat.fill=F_RED
