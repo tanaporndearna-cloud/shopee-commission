@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-build_analysis.py  –  เพิ่มชีต เงินเข้าบริษัท + ใบปะหน้า SHOPEE ลงใน input_combined.xlsx
-ใช้ได้ทั้งแบบ import (run()) และ command-line (python build_analysis.py INPUT OUTPUT)
+build_analysis.py  –  เพิ่มชีต เงินเข้าบริษัท + ใบปะหน้า SHOPEE + รอชำระ ลงใน input_combined.xlsx
+ใช้ได้ทั้งแบบ import (run()) และ command-line (python build_analysis.py INPUT OUTPUT [PREV_XLSX])
 """
 import sys, shutil, re as _re
 from openpyxl import load_workbook
@@ -16,7 +16,7 @@ COST_URL = "https://docs.google.com/spreadsheets/d/1whwXYiUyDC0uo6oaudr_QqzCV6UF
 NOTE_URL = "https://docs.google.com/spreadsheets/d/1p4-DX-Sq-Mvo_FNAkYtGMkdEBvPDCuPM_sZ_b-_Tm-Y/edit?usp=sharing"
 
 
-def run(INPUT, OUTPUT):
+def run(INPUT, OUTPUT, prev_xlsx_path=None):
     print('Reading Data ERP...')
     wb0 = load_workbook(INPUT, data_only=True)
     ws0 = wb0['Data ERP']
@@ -460,6 +460,65 @@ def run(INPUT, OUTPUT):
     ws_cv.page_margins=PageMargins(left=0.5,right=0.5,top=0.6,bottom=0.6)
 
     print(f'ใบปะหน้า SHOPEE → {month_str}')
+
+    # ── ชีต รอชำระ ──────────────────────────────────────────────────────────
+    print('Building ชีต รอชำระ...')
+    if 'รอชำระ' in wb.sheetnames: del wb['รอชำระ']
+    ws_pend = wb.create_sheet('รอชำระ', 2)
+
+    # headers = เหมือน เงินเข้าบริษัท + เดือนที่ค้าง
+    pend_hdrs = all_hdrs + ['เดือนที่ค้าง']
+    HDR_RED  = PatternFill('solid', fgColor='C00000')
+    ROW_RED  = PatternFill('solid', fgColor='FFCCCC')
+    for c, h in enumerate(pend_hdrs, 1):
+        cell = ws_pend.cell(1, c)
+        cell.value = h or ''
+        cell.fill  = HDR_RED
+        cell.font  = Font(color='FFFFFF', bold=True)
+        cell.alignment = Alignment(wrap_text=False, vertical='center')
+        ws_pend.column_dimensions[get_column_letter(c)].width = 20
+    ws_pend.freeze_panes = 'A2'
+
+    # ดึง ABB set จาก เงินเข้าบริษัท เดือนนี้ (Col C = index 2, 0-based)
+    current_abbs = set()
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        abb = str(row[2] or '').strip()
+        if abb and abb != 'None': current_abbs.add(abb)
+    print(f'  ABB เดือนนี้: {len(current_abbs)} รายการ')
+
+    # carry forward จากเดือนก่อน
+    carried = 0
+    if prev_xlsx_path:
+        try:
+            wb_prev = load_workbook(prev_xlsx_path, data_only=True)
+            if 'รอชำระ' in wb_prev.sheetnames:
+                ws_prev = wb_prev['รอชำระ']
+                for prev_row in ws_prev.iter_rows(min_row=2, values_only=True):
+                    if not any(v for v in prev_row if v not in (None, '')):
+                        continue
+                    prev_abb = str(prev_row[2] or '').strip()
+                    if not prev_abb or prev_abb == 'None':
+                        continue
+                    if prev_abb in current_abbs:
+                        print(f'  ✅ ชำระแล้ว: {prev_abb}')
+                        continue
+                    # ยังค้างอยู่ → carry forward
+                    new_r = ws_pend.max_row + 1
+                    for ci, val in enumerate(prev_row, 1):
+                        cell = ws_pend.cell(new_r, ci)
+                        cell.value = val
+                        cell.fill  = ROW_RED
+                        cell.alignment = Alignment(wrap_text=False, vertical='center')
+                    carried += 1
+                wb_prev.close()
+                print(f'  Carry forward: {carried} rows จากเดือนก่อน')
+            else:
+                print('  ไม่พบชีต รอชำระ ในไฟล์เดือนก่อน')
+        except Exception as e:
+            print(f'  ⚠️ อ่านไฟล์เดือนก่อนไม่ได้: {e}')
+
+    print(f'ชีต รอชำระ: {ws_pend.max_row - 1} rows (carry forward {carried})')
+
     wb.save(OUTPUT)
     print(f'\nDone: {len(rows)} rows saved -> {OUTPUT}')
 
@@ -467,4 +526,5 @@ def run(INPUT, OUTPUT):
 if __name__ == '__main__':
     INPUT  = sys.argv[1]
     OUTPUT = sys.argv[2]
-    run(INPUT, OUTPUT)
+    PREV   = sys.argv[3] if len(sys.argv) > 3 else None
+    run(INPUT, OUTPUT, PREV)
