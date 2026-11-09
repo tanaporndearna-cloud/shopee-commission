@@ -4,7 +4,7 @@ Shopee Commission Calculator — Streamlit App
 TRC Motorsport
 """
 import streamlit as st
-import tempfile, os, io, datetime, traceback
+import tempfile, os, io, re, datetime, traceback
 import requests
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -42,7 +42,6 @@ def get_oauth_flow():
     return flow
 
 def handle_oauth_callback():
-    """รับ OAuth callback — แลก code เป็น credentials"""
     query_params = st.query_params
     if "code" in query_params and "drive_credentials" not in st.session_state:
         try:
@@ -63,7 +62,6 @@ def handle_oauth_callback():
             st.error(f"OAuth error: {e}")
 
 def get_user_drive_service():
-    """Drive service โดยใช้ credentials ของ user (OAuth)"""
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
@@ -81,9 +79,7 @@ def get_user_drive_service():
         st.session_state["drive_credentials"]["token"] = creds.token
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
-# ── Service account helpers ───────────────────────────────────────────────────
 def get_drive_service():
-    """Drive service ด้วย service account (สำหรับดึง STOCK)"""
     from google.oauth2.service_account import Credentials
     from googleapiclient.discovery import build
     creds = Credentials.from_service_account_info(
@@ -93,12 +89,10 @@ def get_drive_service():
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 def get_auto_drive_service():
-    """ใช้ stored refresh_token จาก secrets อัตโนมัติ — ไม่ต้อง login"""
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
     try:
-        # รองรับทั้ง [gdrive_oauth] (เหมือน LAZADA) และ [oauth]
         oauth = {}
         if "gdrive_oauth" in st.secrets:
             oauth = dict(st.secrets["gdrive_oauth"])
@@ -121,7 +115,6 @@ def get_auto_drive_service():
     return get_drive_service()
 
 def download_stock_csv() -> str | None:
-    """ดาวน์โหลด STOCK จาก Google Sheets → return path CSV ชั่วคราว"""
     export_url = f"https://docs.google.com/spreadsheets/d/{STOCK_SHEET_ID}/export?format=csv"
     try:
         r = requests.get(export_url, timeout=30)
@@ -149,11 +142,34 @@ def download_stock_csv() -> str | None:
         st.warning(f"⚠️ ดาวน์โหลด STOCK ไม่ได้: {e}")
         return None
 
+def download_prev_sheet(sheet_url: str) -> str | None:
+    """ดาวน์โหลด Google Sheet เดือนก่อนเป็น xlsx จาก URL"""
+    m = re.search(r'/spreadsheets/d/([a-zA-Z0-9_-]+)', sheet_url)
+    if not m:
+        st.warning("⚠️ URL ไม่ถูกต้อง — ต้องเป็น Google Sheets URL")
+        return None
+    sheet_id = m.group(1)
+    try:
+        from googleapiclient.http import MediaIoBaseDownload
+        svc = get_auto_drive_service()
+        req = svc.files().export_media(
+            fileId=sheet_id,
+            mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        buf = io.BytesIO()
+        dl = MediaIoBaseDownload(buf, req)
+        done = False
+        while not done:
+            _, done = dl.next_chunk()
+        tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False, mode='wb')
+        tmp.write(buf.getvalue())
+        tmp.close()
+        return tmp.name
+    except Exception as e:
+        st.warning(f"⚠️ ดาวน์โหลดชีตเดือนก่อนไม่ได้: {e}")
+        return None
+
 def upload_to_drive(file_bytes: bytes, filename: str, folder_id: str) -> str:
-    """อัปโหลดไฟล์ไปยัง Google Drive → return web link
-    ใช้ OAuth user credentials ถ้า login แล้ว
-    ถ้าไม่ได้ login ใช้ stored refresh_token จาก secrets อัตโนมัติ
-    """
     from googleapiclient.http import MediaIoBaseUpload
     if "drive_credentials" in st.session_state:
         svc = get_user_drive_service()
@@ -164,7 +180,6 @@ def upload_to_drive(file_bytes: bytes, filename: str, folder_id: str) -> str:
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         resumable=True,
     )
-    # แปลงเป็น Google Sheet อัตโนมัติตอน upload
     meta = {"name": filename, "parents": [folder_id], "mimeType": "application/vnd.google-apps.spreadsheet"}
     f = svc.files().create(
         body=meta,
@@ -184,7 +199,7 @@ def upload_to_drive(file_bytes: bytes, filename: str, folder_id: str) -> str:
     return f.get("webViewLink", f"https://drive.google.com/file/d/{file_id}/view")
 
 
-# ── Handle OAuth callback (ต้องทำก่อน UI) ────────────────────────────────────
+# ── Handle OAuth callback ─────────────────────────────────────────────────────
 if has_oauth_secrets():
     handle_oauth_callback()
 
@@ -206,7 +221,6 @@ with st.sidebar:
 
     st.divider()
 
-    # ── Google Drive auth ─────────────────────────────────────────────────────
     if has_oauth_secrets():
         st.markdown("**Google Drive Upload**")
         if "drive_credentials" in st.session_state:
@@ -259,6 +273,15 @@ with col2:
 
 with st.expander("🗂️ อัปโหลด STOCK.xlsx (ถ้าไม่ต้องการดึงจาก Drive)"):
     stock_override = st.file_uploader("STOCK.xlsx (optional)", type=["xlsx"])
+
+# ── รอชำระ — URL Google Sheet เดือนก่อน ──────────────────────────────────────
+with st.expander("📋 ชีตรอชำระ — ใส่ URL Google Sheet เดือนก่อน (optional)"):
+    st.caption("ระบบจะดึงชีต 'รอชำระ' จากเดือนก่อน และ carry forward รายการที่ยังไม่ชำระ")
+    prev_sheet_url = st.text_input(
+        "URL Google Sheet เดือนก่อน",
+        placeholder="https://docs.google.com/spreadsheets/d/...",
+        help="วาง URL ของ Google Sheet input_combined เดือนก่อน — ถ้าไม่ใส่จะสร้างชีตรอชำระว่างเปล่า",
+    )
 
 st.divider()
 
@@ -337,7 +360,17 @@ if st.button("🚀 คำนวณค่าคอม", type="primary", use_conta
                 if fin_files:
                     log(f"✅ การเงิน SHOPEE: {len(fin_files)} ไฟล์")
 
-                # 6. รัน build_combined
+                # 6. ดาวน์โหลด Google Sheet เดือนก่อน (ถ้ามี URL)
+                prev_xlsx_path = None
+                if prev_sheet_url and prev_sheet_url.strip():
+                    log(f"\n⏳ กำลังดาวน์โหลดชีตเดือนก่อน...")
+                    prev_xlsx_path = download_prev_sheet(prev_sheet_url.strip())
+                    if prev_xlsx_path:
+                        log("✅ ดาวน์โหลดชีตเดือนก่อนสำเร็จ")
+                    else:
+                        log("⚠️ ไม่สามารถดาวน์โหลดชีตเดือนก่อนได้ — จะสร้างชีตรอชำระว่างเปล่า")
+
+                # 7. รัน build_combined
                 out_path = os.path.join(base, "input_combined.xlsx")
                 log("\n⏳ กำลังรัน build_combined...")
                 import sys, io as _io
@@ -352,25 +385,25 @@ if st.button("🚀 คำนวณค่าคอม", type="primary", use_conta
                     log(f"  {line}")
                 log("✅ build_combined เสร็จแล้ว")
 
-                # 7. รัน build_analysis
+                # 8. รัน build_analysis
                 log("\n⏳ กำลังรัน build_analysis...")
                 sys.stdout = buf = _io.StringIO()
                 try:
                     from build_analysis import run as run_analysis
-                    run_analysis(out_path, out_path)
+                    run_analysis(out_path, out_path, prev_xlsx_path)
                 finally:
                     sys.stdout = old_stdout
                 for line in buf.getvalue().splitlines():
                     log(f"  {line}")
                 log("✅ build_analysis เสร็จแล้ว")
 
-                # 8. อ่านไฟล์ผลลัพธ์
+                # 9. อ่านไฟล์ผลลัพธ์
                 with open(out_path, "rb") as f:
                     result_bytes = f.read()
 
                 output_filename = f"input_combined_{folder_name}.xlsx"
 
-                # 9. อัปโหลดไป Drive
+                # 10. อัปโหลดไป Drive
                 log(f"\n⏳ กำลังอัปโหลด {output_filename} ไปยัง Google Drive...")
                 try:
                     drive_link = upload_to_drive(result_bytes, output_filename, OUTPUT_FOLDER_ID)
@@ -381,7 +414,7 @@ if st.button("🚀 คำนวณค่าคอม", type="primary", use_conta
                     log(f"⚠️ อัปโหลด Drive ไม่ได้: {e}")
                     st.warning(f"อัปโหลดไป Drive ไม่ได้ค่ะ — ดาวน์โหลดโดยตรงแทนได้เลย")
 
-                # 10. Download button
+                # 11. Download button
                 st.download_button(
                     label="⬇️ ดาวน์โหลดไฟล์",
                     data=result_bytes,
@@ -393,6 +426,8 @@ if st.button("🚀 คำนวณค่าคอม", type="primary", use_conta
                 # Cleanup
                 if stock_csv_path and os.path.exists(stock_csv_path):
                     os.unlink(stock_csv_path)
+                if prev_xlsx_path and os.path.exists(prev_xlsx_path):
+                    os.unlink(prev_xlsx_path)
 
         except Exception as e:
             st.error(f"❌ เกิดข้อผิดพลาด: {e}")
@@ -400,5 +435,4 @@ if st.button("🚀 คำนวณค่าคอม", type="primary", use_conta
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
 st.divider()
-st.caption("TRC Motorsport © 2026 | shopee-commission v1.4")
-
+st.caption("TRC Motorsport © 2026 | shopee-commission v1.5")
